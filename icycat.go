@@ -16,7 +16,7 @@ import (
 
 var Flags struct {
 	Output    string `flag:",short=o"            desc:"Specifies which file to write the output to"`
-	UserAgent string `flag:",default=allcat/1.0" desc:"Which User-Agent string to use"`
+	UserAgent string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 }
@@ -59,7 +59,7 @@ func PrintIcyHeaders(h Headerer) {
 }
 
 func main() {
-	defer util.Init("cat", 0, 1)()
+	defer util.Init("icycat", 1, 0)()
 
 	if glog.V(2) {
 		if err := flag.Set("stderrthreshold", "INFO"); err != nil {
