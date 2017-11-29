@@ -23,4 +23,14 @@ if [[ $? -ne 0 ]]; then
 	exit 1
 fi
 
-exec ./bin/$OSKIND.$ARCH/icycat --logtostderr --stderrthreshold=INFO http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3 | mpv /dev/stdin
+ICYCAT="./bin/$OSKIND.$ARCH/icycat"
+if [[ ! -x $ICYCAT ]]; then
+	ICYCAT="./icycat"
+
+	if [[ ! -x $ICYCAT ]]; then
+		echo "you need to build icycat first!" >&2
+		exit 1
+	fi
+fi
+
+exec $ICYCAT --logtostderr --stderrthreshold=INFO http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3 | mpv /dev/stdin
