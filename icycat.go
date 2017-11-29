@@ -91,6 +91,15 @@ func main() {
 		default:
 		}
 
+		// BUG: if you attempt to load a SHOUTcast 1.9.x address,
+		// it will return an HTTP version field of "ICY" not "HTTP/x.y",
+		// and Go’s net/http library will barf and return an error.
+		// There is no way at this time to tell it to treat said HTTP version as "HTTP/1.0"
+		// without possibly hijacking the stream through a text transform that looks to see if it
+		// starts with ICY, and replaces that with HTTP/1.0…
+		//
+		// BETTER: net/http should allow one to say "ICY" maps to HTTP/1.0,
+		// it already has short-circuits for "HTTP/1.0" and "HTTP/1.1" after all.
 		f, err := files.Open(ctx, arg)
 		if err != nil {
 			glog.Fatal(err)
