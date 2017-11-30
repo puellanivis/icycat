@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +21,7 @@ import (
 var Flags struct {
 	Output    string `flag:",short=o"            desc:"Specifies which file to write the output to"`
 	UserAgent string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
+	Quiet     bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 }
@@ -58,6 +63,45 @@ func PrintIcyHeaders(h Headerer) {
 	}
 }
 
+var stderr = os.Stderr
+
+func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
+	if !strings.HasPrefix(filename, "udp:") {
+		return files.Create(ctx, filename)
+	}
+
+	ffmpegArgs := []string{
+		"-i", "-",
+		"-codec", "copy",
+		"-copyts",
+		"-f", "mpegts",
+		"-mpegts_service_type", "digital_radio",
+		"-mpegts_copyts", "1",
+		"-mpegts_m2ts_mode", "1",
+		"-mpegts_flags", "initial_discontinuity",
+		"-mpegts_flags", "system_b",
+		filename,
+	}
+
+	if glog.V(5) {
+		glog.Infof("ffmpeg %q", ffmpegArgs)
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs...)
+	cmd.Stderr = stderr
+
+	out, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
 func main() {
 	defer util.Init("icycat", 1, 0)()
 
@@ -67,7 +111,13 @@ func main() {
 		}
 	}
 
-	ctx := util.Context()
+	if Flags.Quiet {
+		stderr = nil
+	}
+
+	ctx, cancel := context.WithCancel(util.Context())
+	defer cancel()
+
 	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
 
 	args := flag.Args()
@@ -77,16 +127,22 @@ func main() {
 		util.Exit(1)
 	}
 
-	out, err := files.Create(ctx, Flags.Output)
+	out, err := openOutput(ctx, Flags.Output)
 	if err != nil {
 		glog.Fatal(err)
 	}
+	defer func() {
+		if err := out.Close(); err != nil {
+			glog.Error(err)
+		}
+	}()
 
 	arg, args := args[0], args[1:]
 
 	for {
 		select {
 		case <-ctx.Done():
+			glog.Error(ctx.Err())
 			return
 		default:
 		}
