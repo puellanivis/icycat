@@ -1,2 +1,5 @@
 icycat
 bin
+*.ts
+*.mp3
+*.mpegts
