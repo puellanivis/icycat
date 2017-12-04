@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,14 +80,18 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	}
 
 	queries := uri.Query()
-	if packet_size := queries["packet_size"]; len(packet_size) == 0 {
-		// force PacketSize to be a multiple of 188, required for mpegts
-		Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
-		queries.Set("packet_size", fmt.Sprint(Flags.PacketSize))
-
-		uri.RawQuery = queries.Encode()
-		filename = uri.String()
+	if packet_size := queries.Get("pkt_size"); packet_size == "" {
+		if sz, err := strconv.ParseInt(packet_size, 0, 64); err == nil {
+			Flags.PacketSize = int(sz)
+		}
 	}
+
+	// force PacketSize to be a multiple of 188, required for mpegts
+	Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
+	queries.Set("pkt_size", fmt.Sprint(Flags.PacketSize))
+
+	uri.RawQuery = queries.Encode()
+	filename = uri.String()
 
 	ffmpegArgs := []string{
 		"-i", "-",
