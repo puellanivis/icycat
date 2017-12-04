@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -19,9 +21,10 @@ import (
 )
 
 var Flags struct {
-	Output    string `flag:",short=o"            desc:"Specifies which file to write the output to"`
-	UserAgent string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
-	Quiet     bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
+	Output     string `flag:",short=o"            desc:"Specifies which file to write the output to"`
+	UserAgent  string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
+	Quiet      bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
+	PacketSize int    `flag:",default=1316"       desc:"Attach a packet size to any ffmpeg udp protocol that is used."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 }
@@ -70,6 +73,21 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		return files.Create(ctx, filename)
 	}
 
+	uri, err := url.Parse(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	queries := uri.Query()
+	if packet_size := queries["packet_size"]; len(packet_size) == 0 {
+		// force PacketSize to be a multiple of 188, required for mpegts
+		Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
+		queries.Set("packet_size", fmt.Sprint(Flags.PacketSize))
+
+		uri.RawQuery = queries.Encode()
+		filename = uri.String()
+	}
+
 	ffmpegArgs := []string{
 		"-i", "-",
 		"-codec", "copy",
@@ -77,7 +95,6 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		"-f", "mpegts",
 		"-mpegts_service_type", "digital_radio",
 		"-mpegts_copyts", "1",
-		"-mpegts_m2ts_mode", "1",
 		"-mpegts_flags", "initial_discontinuity",
 		"-mpegts_flags", "system_b",
 		filename,
@@ -103,7 +120,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 }
 
 func main() {
-	defer util.Init("icycat", 1, 0)()
+	defer util.Init("icycat", 1, 1)()
 
 	if glog.V(2) {
 		if err := flag.Set("stderrthreshold", "INFO"); err != nil {
