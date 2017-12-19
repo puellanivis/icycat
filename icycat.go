@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,8 @@ import (
 	_ "github.com/puellanivis/breton/lib/files/plugins"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
+	"github.com/puellanivis/breton/lib/metrics"
+	_ "github.com/puellanivis/breton/lib/metrics/http"
 	"github.com/puellanivis/breton/lib/util"
 )
 
@@ -28,11 +31,19 @@ var Flags struct {
 	PacketSize int    `flag:",default=1316"       desc:"Attach a packet size to any ffmpeg udp protocol that is used."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
+
+	Metrics        bool   `desc:"If set, publish metrics to the given metrics-port or metrics-addr."`
+	MetricsPort    int    `desc:"Which port to publish metrics with. (default auto-assign)"`
+	MetricsAddress string `desc:"Which local address to listen on; overrides metrics-port flag."`
 }
 
 func init() {
 	flag.FlagStruct("", &Flags)
 }
+
+var (
+	bwSummary = metrics.Summary("icy_read_bandwidth", "a summary of the bandwidth during reading", metrics.CommonObjectives())
+)
 
 type Headerer interface {
 	Header() (http.Header, error)
@@ -125,12 +136,42 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 }
 
 func main() {
-	defer util.Init("icycat", 1, 1)()
+	defer util.Init("icycat", 1, 2)()
 
 	if glog.V(2) {
 		if err := flag.Set("stderrthreshold", "INFO"); err != nil {
 			glog.Error(err)
 		}
+	}
+
+	if Flags.MetricsPort != 0 || Flags.MetricsAddress != "" {
+		Flags.Metrics = true
+	}
+
+	if Flags.Metrics {
+		addr := Flags.MetricsAddress
+		if addr == "" {
+			addr = fmt.Sprintf(":%d", Flags.MetricsPort)
+		}
+
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			glog.Fatal("net.Listen: ", err)
+		}
+
+		msg := fmt.Sprintf("listening on: %s", l.Addr())
+		fmt.Fprintln(os.Stderr, msg)
+		glog.Info(msg)
+
+		http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/metrics/prometheus", http.StatusMovedPermanently)
+		})
+
+		go func() {
+			if err := http.Serve(l, nil); err != nil {
+				glog.Fatal("http.Serve: ", err)
+			}
+		}()
 	}
 
 	if Flags.Quiet {
@@ -160,6 +201,13 @@ func main() {
 	}()
 
 	arg, args := args[0], args[1:]
+
+	var opts []files.CopyOption
+	opts = append(opts, files.WithWatchdogTimeout(Flags.Timeout))
+
+	if Flags.Metrics {
+		opts = append(opts, files.WithBandwidthMetrics(bwSummary))
+	}
 
 	for {
 		select {
@@ -196,7 +244,7 @@ func main() {
 		start := time.Now()
 		wait := time.After(Flags.Timeout)
 
-		n, err := files.CopyWithRunningTimeout(ctx, out, f, Flags.Timeout)
+		n, err := files.Copy(ctx, out, f, opts...)
 		if err != nil {
 			glog.Error(err)
 
