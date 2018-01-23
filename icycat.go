@@ -67,14 +67,15 @@ func PrintIcyHeaders(h Headerer) {
 	}
 	sort.Strings(headers)
 
-	for _, k := range headers {
-		v := header[k]
+	for _, key := range headers {
+		val := header[key]
 
-		if len(v) == 1 {
-			util.Statusf("%s: %q\n", k, v[0])
-		} else {
-			util.Statusf("%s: %q\n", k, v)
+		var v interface{} = val
+		if len(val) == 1 {
+			v = val[0]
 		}
+
+		util.Statusf("%s: %q\n", key, v)
 	}
 }
 
@@ -92,7 +93,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 
 	queries := uri.Query()
 	if packet_size := queries.Get("pkt_size"); packet_size == "" {
-		if sz, err := strconv.ParseInt(packet_size, 0, 64); err == nil {
+		if sz, err := strconv.ParseInt(packet_size, 0, strconv.IntSize); err == nil {
 			Flags.PacketSize = int(sz)
 		}
 	}
@@ -116,11 +117,16 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		filename,
 	}
 
-	if glog.V(5) {
-		glog.Infof("ffmpeg %q", ffmpegArgs)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		glog.Fatal("you must install ffmpeg to output to mpegts over udp: ", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs...)
+	if glog.V(5) {
+		glog.Infof("%s %q", ffmpeg, ffmpegArgs)
+	}
+
+	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegArgs...)
 	cmd.Stderr = stderr
 
 	out, err := cmd.StdinPipe()
@@ -139,6 +145,21 @@ func main() {
 	finish, ctx := util.Init("icycat", 1, 2)
 	defer finish()
 
+	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	args := flag.Args()
+	if len(args) < 1 {
+		util.Statusln(flag.Usage)
+		util.Exit(1)
+	}
+
+	if Flags.Quiet {
+		stderr = nil
+	}
+
 	if glog.V(2) {
 		if err := flag.Set("stderrthreshold", "INFO"); err != nil {
 			glog.Error(err)
@@ -150,45 +171,39 @@ func main() {
 	}
 
 	if Flags.Metrics {
-		addr := Flags.MetricsAddress
-		if addr == "" {
-			addr = fmt.Sprintf(":%d", Flags.MetricsPort)
-		}
-
-		l, err := net.Listen("tcp", addr)
-		if err != nil {
-			glog.Fatal("net.Listen: ", err)
-		}
-
-		msg := fmt.Sprintf("listening on: %s", l.Addr())
-		fmt.Fprintln(os.Stderr, msg)
-		glog.Info(msg)
-
-		http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-			http.Redirect(w, req, "/metrics/prometheus", http.StatusMovedPermanently)
-		})
-
 		go func() {
-			if err := http.Serve(l, nil); err != nil {
-				glog.Fatal("http.Serve: ", err)
+			addr := Flags.MetricsAddress
+			if addr == "" {
+				addr = fmt.Sprintf(":%d", Flags.MetricsPort)
+			}
+
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				glog.Fatal("net.Listen: ", err)
+			}
+
+			msg := fmt.Sprintf("metrics available at: http://%s/metrics/prometheus", l.Addr())
+			util.Statusln(msg)
+			glog.Info(msg)
+
+			http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+				http.Redirect(w, req, "/metrics/prometheus", http.StatusMovedPermanently)
+			})
+
+			srv := &http.Server{}
+
+			go func() {
+				<-ctx.Done()
+				srv.Shutdown(util.Context())
+				l.Close()
+			}()
+
+			if err := srv.Serve(l); err != nil {
+				if err != http.ErrServerClosed {
+					glog.Fatal("http.Serve: ", err)
+				}
 			}
 		}()
-	}
-
-	if Flags.Quiet {
-		stderr = nil
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
-
-	args := flag.Args()
-
-	if len(args) < 1 {
-		glog.Error("icycat requires an address to stream")
-		util.Exit(1)
 	}
 
 	out, err := openOutput(ctx, Flags.Output)
