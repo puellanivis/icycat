@@ -136,7 +136,8 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 }
 
 func main() {
-	defer util.Init("icycat", 1, 2)()
+	finish, ctx := util.Init("icycat", 1, 2)
+	defer finish()
 
 	if glog.V(2) {
 		if err := flag.Set("stderrthreshold", "INFO"); err != nil {
@@ -178,7 +179,7 @@ func main() {
 		stderr = nil
 	}
 
-	ctx, cancel := context.WithCancel(util.Context())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
