@@ -92,7 +92,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	}
 
 	queries := uri.Query()
-	if packet_size := queries.Get("pkt_size"); packet_size == "" {
+	if packet_size := queries.Get("pkt_size"); packet_size != "" {
 		if sz, err := strconv.ParseInt(packet_size, 0, strconv.IntSize); err == nil {
 			Flags.PacketSize = int(sz)
 		}
@@ -100,6 +100,9 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 
 	// force PacketSize to be a multiple of 188, required for mpegts
 	Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
+	if Flags.PacketSize <= 0 {
+		Flags.PacketSize = 188
+	}
 	queries.Set("pkt_size", fmt.Sprint(Flags.PacketSize))
 
 	uri.RawQuery = queries.Encode()
