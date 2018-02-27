@@ -6,21 +6,23 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/puellanivis/breton/lib/io/bufpipe"
 	"github.com/puellanivis/breton/lib/files"
 	"github.com/puellanivis/breton/lib/files/httpfiles"
 	_ "github.com/puellanivis/breton/lib/files/plugins"
+	_ "github.com/puellanivis/breton/lib/files/udp_noerr"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
 	"github.com/puellanivis/breton/lib/metrics"
 	_ "github.com/puellanivis/breton/lib/metrics/http"
+	"github.com/puellanivis/breton/lib/mpeg/framer"
+	"github.com/puellanivis/breton/lib/mpeg/ts"
 	"github.com/puellanivis/breton/lib/util"
 )
 
@@ -82,66 +84,75 @@ func PrintIcyHeaders(h Headerer) {
 var stderr = os.Stderr
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
+	f, err := files.Create(ctx, filename)
+	if err != nil {
+		return nil, err
+	}
+
 	if !strings.HasPrefix(filename, "udp:") {
-		return files.Create(ctx, filename)
+		return f, nil
 	}
 
-	uri, err := url.Parse(filename)
+	mux := ts.NewMux(f)
+
+	var wg sync.WaitGroup
+
+	wr, err := mux.Writer(ctx, 1, ts.ProgramTypeAudio)
 	if err != nil {
+		f.Close()
 		return nil, err
 	}
 
-	queries := uri.Query()
-	if packet_size := queries.Get("pkt_size"); packet_size != "" {
-		if sz, err := strconv.ParseInt(packet_size, 0, strconv.IntSize); err == nil {
-			Flags.PacketSize = int(sz)
+	pipe := bufpipe.New(ctx)
+	s := framer.NewScanner(pipe)
+
+	wg.Add(1)
+	go func() {
+		defer func() {
+			if err := wr.Close(); err != nil {
+				glog.Errorf("mux.Writer.Close: %+v", err)
+			}
+
+			wg.Done()
+		}()
+
+		for s.Scan() {
+			b := s.Bytes()
+
+			n, err := wr.Write(b)
+			if err != nil {
+				glog.Errorf("mux.Writer.Write: %+v", err)
+				return
+			}
+
+			if n < len(b) {
+				glog.Errorf("mux.Writer.Write: %+v", io.ErrShortWrite)
+			}
 		}
-	}
 
-	// force PacketSize to be a multiple of 188, required for mpegts
-	Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
-	if Flags.PacketSize <= 0 {
-		Flags.PacketSize = 188
-	}
-	queries.Set("pkt_size", fmt.Sprint(Flags.PacketSize))
+		if err := s.Err(); err != nil {
+			glog.Errorf("framer.Scanner: %+v", filename, err)
+		}
+	}()
 
-	uri.RawQuery = queries.Encode()
-	filename = uri.String()
+	go func() {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
-	ffmpegArgs := []string{
-		"-i", "-",
-		"-codec", "copy",
-		"-copyts",
-		"-f", "mpegts",
-		"-mpegts_service_type", "digital_radio",
-		"-mpegts_copyts", "1",
-		"-mpegts_flags", "initial_discontinuity",
-		"-mpegts_flags", "system_b",
-		filename,
-	}
+		for err := range mux.Serve(ctx) {
+			glog.Errorf("mux.Serve: %+v", err)
+			cancel()
+		}
+	}()
 
-	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		glog.Fatal("you must install ffmpeg to output to mpegts over udp: ", err)
-	}
+	go func() {
+		wg.Wait()
+		for err := range mux.Close() {
+			glog.Errorf("mux.Close: %+v", err)
+		}
+	}()
 
-	if glog.V(5) {
-		glog.Infof("%s %q", ffmpeg, ffmpegArgs)
-	}
-
-	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegArgs...)
-	cmd.Stderr = stderr
-
-	out, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	return out, nil
+	return pipe, nil
 }
 
 func main() {
