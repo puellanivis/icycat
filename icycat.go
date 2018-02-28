@@ -6,17 +6,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"github.com/puellanivis/breton/lib/io/bufpipe"
 	"github.com/puellanivis/breton/lib/files"
 	"github.com/puellanivis/breton/lib/files/httpfiles"
 	_ "github.com/puellanivis/breton/lib/files/plugins"
-	_ "github.com/puellanivis/breton/lib/files/udp_noerr"
+	"github.com/puellanivis/breton/lib/files/udpfiles"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
 	"github.com/puellanivis/breton/lib/metrics"
@@ -30,7 +34,10 @@ var Flags struct {
 	Output     string `flag:",short=o"            desc:"Specifies which file to write the output to"`
 	UserAgent  string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
 	Quiet      bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
-	PacketSize int    `flag:",default=1316"       desc:"Attach a packet size to any ffmpeg udp protocol that is used."`
+
+	// --packet-size defaults to 1316, which is 1500 - (1500 mod 188)
+	// Where 1500 is the typical ethernet MTU, and 188 is the mpegts packet size.
+	PacketSize int    `flag:",default=1316"       desc:"If outputing to udp, default to using this packet size."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 
@@ -77,20 +84,53 @@ func PrintIcyHeaders(h Headerer) {
 			v = val[0]
 		}
 
-		util.Statusf("%s: %q\n", key, v)
+		glog.Infof("%s: %q\n", key, v)
 	}
 }
 
 var stderr = os.Stderr
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
-	f, err := files.Create(ctx, filename)
+	if !strings.HasPrefix(filename, "udp:") {
+		return files.Create(ctx, filename)
+	}
+
+	uri, err := url.Parse(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	if !strings.HasPrefix(filename, "udp:") {
-		return f, nil
+	// Default packet size: what the flag --packet-size is.
+	pktSize := Flags.PacketSize
+
+	q := uri.Query()
+	if pkt_size := q.Get(udpfiles.FieldPacketSize); pkt_size != "" {
+		// If the output URL has a pkt_size value, override the default.
+		sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
+		if err != nil {
+			return nil, errors.Errorf("bad %s value: %s: %+v", udpfiles.FieldPacketSize, pkt_size, err)
+		}
+
+		pktSize = int(sz)
+	}
+
+	// Our packet size needs to be an integer multiple of the mpegts packet size.
+	pktSize -= (pktSize % ts.PacketSize)
+
+	// Our packet size needs to be at least the mpegts packet size.
+	if pktSize <= 0 {
+		pktSize = ts.PacketSize
+	}
+
+	q.Set(udpfiles.FieldPacketSize, fmt.Sprint(pktSize))
+
+	uri.RawQuery = q.Encode()
+	filename = uri.String()
+
+	glog.Infof("outputing to %s", filename)
+	f, err := files.Create(ctx, filename, udpfiles.WithIgnoreErrors(true))
+	if err != nil {
+		return nil, err
 	}
 
 	mux := ts.NewMux(f)
