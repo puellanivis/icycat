@@ -176,12 +176,8 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	}()
 
 	go func() {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
 		for err := range mux.Serve(ctx) {
-			glog.Errorf("mux.Serve: %+v", err)
-			cancel()
+			glog.Fatalf("mux.Serve: %+v", err)
 		}
 	}()
 
