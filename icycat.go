@@ -171,7 +171,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		}
 
 		if err := s.Err(); err != nil {
-			glog.Errorf("framer.Scanner: %+v", filename, err)
+			glog.Errorf("framer.Scanner: %s: %+v", filename, err)
 		}
 	}()
 
