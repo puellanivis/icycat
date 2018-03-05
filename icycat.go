@@ -175,7 +175,10 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		}
 	}()
 
+	out := newTriggerWriter(pipe)
+
 	go func() {
+		<-out.Trigger()
 		for err := range mux.Serve(ctx) {
 			glog.Fatalf("mux.Serve: %+v", err)
 		}
@@ -188,7 +191,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		}
 	}()
 
-	return pipe, nil
+	return out, nil
 }
 
 func main() {
