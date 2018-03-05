@@ -34,7 +34,7 @@ import (
 
 var Flags struct {
 	Output     string `flag:",short=o"            desc:"Specifies which file to write the output to"`
-	UserAgent  string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
+	UserAgent  string `flag:",default=icycat/2.0" desc:"Which User-Agent string to use"`
 	Quiet      bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
 
 	// --packet-size defaults to 1316, which is 1500 - (1500 mod 188)
@@ -202,7 +202,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 }
 
 func main() {
-	finish, ctx := util.Init("icycat", 1, 2)
+	finish, ctx := util.Init("icycat", 2, 0)
 	defer finish()
 
 	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
