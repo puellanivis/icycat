@@ -319,11 +319,16 @@ func main() {
 			}
 		}
 
-		// minimum Flags.Timeout wait.
-		<-wait
-
 		if glog.V(2) {
 			glog.Infof("%d bytes copied in %v", n, time.Since(start))
+		}
+
+		// minimum Flags.Timeout wait.
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			glog.Error(ctx.Err())
+			return
 		}
 	}
 }
