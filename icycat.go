@@ -27,6 +27,8 @@ import (
 	_ "github.com/puellanivis/breton/lib/metrics/http"
 	"github.com/puellanivis/breton/lib/mpeg/framer"
 	"github.com/puellanivis/breton/lib/mpeg/ts"
+	"github.com/puellanivis/breton/lib/mpeg/ts/dvb"
+	"github.com/puellanivis/breton/lib/mpeg/ts/psi"
 	"github.com/puellanivis/breton/lib/util"
 )
 
@@ -58,11 +60,11 @@ type Headerer interface {
 	Header() (http.Header, error)
 }
 
-func PrintIcyHeaders(h Headerer) {
+func PrintIcyHeaders(h Headerer) (name string) {
 	header, err := h.Header()
 	if err != nil {
 		glog.Errorf("couldn’t get headers: %s", err)
-		return
+		return ""
 	}
 
 	var headers []string
@@ -86,9 +88,14 @@ func PrintIcyHeaders(h Headerer) {
 
 		glog.Infof("%s: %q\n", key, v)
 	}
+
+	return header.Get("Icy-Name")
 }
 
-var stderr = os.Stderr
+var (
+	stderr = os.Stderr
+	mux *ts.Mux
+)
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	if !strings.HasPrefix(filename, "udp:") {
@@ -133,7 +140,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		return nil, err
 	}
 
-	mux := ts.NewMux(f)
+	mux = ts.NewMux(f)
 
 	var wg sync.WaitGroup
 
@@ -305,7 +312,29 @@ func main() {
 		}
 
 		if h, ok := f.(Headerer); ok {
-			PrintIcyHeaders(h)
+			name := PrintIcyHeaders(h)
+
+			if mux != nil {
+				service := &dvb.Service{
+					ID: 0x0001,
+				}
+				service.Descriptors = append(service.Descriptors, &dvb.ServiceDescriptor{
+					Type: dvb.ServiceTypeRadio,
+					Provider: "icycat",
+					Name: name,
+				})
+
+				sdt := &dvb.ServiceDescriptorTable{
+					Syntax: &psi.SectionSyntax{
+						TableIDExtension: 1,
+						Current: true,
+					},
+					OriginalNetworkID: 0xFF01,
+					Services: []*dvb.Service{ service },
+				}
+				mux.SetDVBSDT(sdt)
+				glog.Infof("dvb.sdt: %v", sdt)
+			}
 		}
 
 		start := time.Now()
