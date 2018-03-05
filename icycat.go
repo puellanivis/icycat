@@ -313,6 +313,9 @@ func main() {
 
 		if h, ok := f.(Headerer); ok {
 			name := PrintIcyHeaders(h)
+			if name == "" {
+				name = f.Name()
+			}
 
 			if mux != nil {
 				service := &dvb.Service{
