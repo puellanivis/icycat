@@ -297,10 +297,8 @@ func main() {
 			glog.Fatal(err)
 		}
 
-		if fi, err := f.Stat(); err == nil {
-			if glog.V(2) && fi.Name() != arg {
-				glog.Infof("catting %s", fi.Name())
-			}
+		if glog.V(2) && f.Name() != arg {
+			glog.Infof("catting %s", f.Name())
 		}
 
 		if h, ok := f.(Headerer); ok {
