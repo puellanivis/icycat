@@ -99,7 +99,11 @@ var (
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	if !strings.HasPrefix(filename, "udp:") {
-		return files.Create(ctx, filename)
+		f, err := files.Create(ctx, filename)
+
+		glog.Infof("output: %s", f.Name())
+
+		return f, err
 	}
 
 	uri, err := url.Parse(filename)
@@ -134,11 +138,11 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	uri.RawQuery = q.Encode()
 	filename = uri.String()
 
-	glog.Infof("outputing to %s", filename)
 	f, err := files.Create(ctx, filename, udpfiles.WithIgnoreErrors(true))
 	if err != nil {
 		return nil, err
 	}
+	glog.Infof("output: %s", f.Name())
 
 	mux = ts.NewMux(f)
 
