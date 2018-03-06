@@ -344,6 +344,10 @@ func main() {
 		wait := time.After(Flags.Timeout)
 
 		n, err := files.Copy(ctx, out, f, opts...)
+		if err2 := f.Close(); err == nil {
+			err = err2
+		}
+
 		if err != nil {
 			glog.Error(err)
 
