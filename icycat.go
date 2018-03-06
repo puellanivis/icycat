@@ -98,7 +98,7 @@ var (
 )
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
-	if !strings.HasPrefix(filename, "udp:") {
+	if !strings.HasPrefix(filename, "udp:") && !strings.HasPrefix(filename, "mpegts:") {
 		f, err := files.Create(ctx, filename)
 
 		glog.Infof("output: %s", f.Name())
@@ -106,7 +106,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		return f, err
 	}
 
-	uri, err := url.Parse(filename)
+	uri, err := url.Parse(strings.TrimPrefix(filename, "mpegts:"))
 	if err != nil {
 		return nil, err
 	}
