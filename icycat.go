@@ -53,7 +53,7 @@ func init() {
 }
 
 var (
-	bwSummary = metrics.Summary("icy_read_bandwidth", "a summary of the bandwidth during reading", metrics.CommonObjectives())
+	bwSummary = metrics.Summary("icycat_bandwidth_bps", "bandwidth of the copy to output process (bits/second)", metrics.CommonObjectives())
 )
 
 type Headerer interface {
@@ -286,7 +286,7 @@ func main() {
 	opts = append(opts, files.WithWatchdogTimeout(Flags.Timeout))
 
 	if Flags.Metrics {
-		opts = append(opts, files.WithBandwidthMetrics(bwSummary))
+		opts = append(opts, files.WithBandwidthMetrics(bwSummary, true))
 	}
 
 	for {
