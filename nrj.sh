@@ -90,5 +90,5 @@ if [[ -n $PLAY ]]; then
 	exit $?
 fi
 
-exec $ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT \
+exec $ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT --timeout=10s \
 	http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3
