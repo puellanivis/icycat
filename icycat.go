@@ -20,7 +20,7 @@ import (
 	"github.com/puellanivis/breton/lib/files"
 	"github.com/puellanivis/breton/lib/files/httpfiles"
 	_ "github.com/puellanivis/breton/lib/files/plugins"
-	"github.com/puellanivis/breton/lib/files/udpfiles"
+	"github.com/puellanivis/breton/lib/files/socketfiles"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
 	"github.com/puellanivis/breton/lib/metrics"
@@ -115,11 +115,11 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	pktSize := Flags.PacketSize
 
 	q := uri.Query()
-	if pkt_size := q.Get(udpfiles.FieldPacketSize); pkt_size != "" {
+	if pkt_size := q.Get(socketfiles.FieldPacketSize); pkt_size != "" {
 		// If the output URL has a pkt_size value, override the default.
 		sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
 		if err != nil {
-			return nil, errors.Errorf("bad %s value: %s: %+v", udpfiles.FieldPacketSize, pkt_size, err)
+			return nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
 		}
 
 		pktSize = int(sz)
@@ -133,12 +133,12 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		pktSize = ts.PacketSize
 	}
 
-	q.Set(udpfiles.FieldPacketSize, fmt.Sprint(pktSize))
+	q.Set(socketfiles.FieldPacketSize, fmt.Sprint(pktSize))
 
 	uri.RawQuery = q.Encode()
 	filename = uri.String()
 
-	f, err := files.Create(ctx, filename, udpfiles.WithIgnoreErrors(true))
+	f, err := files.Create(ctx, filename, socketfiles.WithIgnoreErrors(true))
 	if err != nil {
 		return nil, err
 	}
@@ -246,12 +246,12 @@ func main() {
 				glog.Fatal("net.Listen: ", err)
 			}
 
-			msg := fmt.Sprintf("metrics available at: http://%s/metrics/prometheus", l.Addr())
+			msg := fmt.Sprintf("metrics available at: http://%s/metrics", l.Addr())
 			util.Statusln(msg)
 			glog.Info(msg)
 
 			http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-				http.Redirect(w, req, "/metrics/prometheus", http.StatusMovedPermanently)
+				http.Redirect(w, req, "/metrics", http.StatusMovedPermanently)
 			})
 
 			srv := &http.Server{}
@@ -321,15 +321,17 @@ func main() {
 				name = f.Name()
 			}
 
+			ServiceDesc := &dvb.ServiceDescriptor{
+				Type: dvb.ServiceTypeRadio,
+				Provider: "icycat",
+				Name: name,
+			}
+
 			if mux != nil {
 				service := &dvb.Service{
 					ID: 0x0001,
 				}
-				service.Descriptors = append(service.Descriptors, &dvb.ServiceDescriptor{
-					Type: dvb.ServiceTypeRadio,
-					Provider: "icycat",
-					Name: name,
-				})
+				service.Descriptors = append(service.Descriptors, ServiceDesc)
 
 				sdt := &dvb.ServiceDescriptorTable{
 					Syntax: &psi.SectionSyntax{
@@ -340,7 +342,14 @@ func main() {
 					Services: []*dvb.Service{ service },
 				}
 				mux.SetDVBSDT(sdt)
-				glog.Infof("dvb.sdt: %v", sdt)
+
+				switch {
+				case glog.V(5) == true:
+					glog.Infof("dvb.sdt: %v", sdt)
+
+				case glog.V(2) == true:
+					glog.Infof("DVB Service Description: %v", ServiceDesc)
+				}
 			}
 		}
 
@@ -348,6 +357,8 @@ func main() {
 		wait := time.After(Flags.Timeout)
 
 		n, err := files.Copy(ctx, out, f, opts...)
+
+		// We open in every loop, so after files.Copy, we have to Close it.
 		if err2 := f.Close(); err == nil {
 			err = err2
 		}
@@ -358,9 +369,8 @@ func main() {
 			if n > 0 {
 				glog.Errorf("%d bytes copied in %v", n, time.Since(start))
 			}
-		}
 
-		if glog.V(2) {
+		} else if glog.V(2) {
 			glog.Infof("%d bytes copied in %v", n, time.Since(start))
 		}
 
