@@ -8,27 +8,38 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/pkg/errors"
+
+	"github.com/puellanivis/breton/lib/io/bufpipe"
 	"github.com/puellanivis/breton/lib/files"
 	"github.com/puellanivis/breton/lib/files/httpfiles"
 	_ "github.com/puellanivis/breton/lib/files/plugins"
+	"github.com/puellanivis/breton/lib/files/socketfiles"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
 	"github.com/puellanivis/breton/lib/metrics"
 	_ "github.com/puellanivis/breton/lib/metrics/http"
+	"github.com/puellanivis/breton/lib/mpeg/framer"
+	"github.com/puellanivis/breton/lib/mpeg/ts"
+	"github.com/puellanivis/breton/lib/mpeg/ts/dvb"
+	"github.com/puellanivis/breton/lib/mpeg/ts/psi"
 	"github.com/puellanivis/breton/lib/util"
 )
 
 var Flags struct {
 	Output     string `flag:",short=o"            desc:"Specifies which file to write the output to"`
-	UserAgent  string `flag:",default=icycat/1.0" desc:"Which User-Agent string to use"`
+	UserAgent  string `flag:",default=icycat/2.0" desc:"Which User-Agent string to use"`
 	Quiet      bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
-	PacketSize int    `flag:",default=1316"       desc:"Attach a packet size to any ffmpeg udp protocol that is used."`
+
+	// --packet-size defaults to 1316, which is 1500 - (1500 mod 188)
+	// Where 1500 is the typical ethernet MTU, and 188 is the mpegts packet size.
+	PacketSize int    `flag:",default=1316"       desc:"If outputing to udp, default to using this packet size."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 
@@ -42,18 +53,18 @@ func init() {
 }
 
 var (
-	bwSummary = metrics.Summary("icy_read_bandwidth", "a summary of the bandwidth during reading", metrics.CommonObjectives())
+	bwSummary = metrics.Summary("icycat_bandwidth_bps", "bandwidth of the copy to output process (bits/second)", metrics.CommonObjectives())
 )
 
 type Headerer interface {
 	Header() (http.Header, error)
 }
 
-func PrintIcyHeaders(h Headerer) {
+func PrintIcyHeaders(h Headerer) (name string) {
 	header, err := h.Header()
 	if err != nil {
 		glog.Errorf("couldn’t get headers: %s", err)
-		return
+		return ""
 	}
 
 	var headers []string
@@ -75,77 +86,127 @@ func PrintIcyHeaders(h Headerer) {
 			v = val[0]
 		}
 
-		util.Statusf("%s: %q\n", key, v)
+		glog.Infof("%s: %q\n", key, v)
 	}
+
+	return header.Get("Icy-Name")
 }
 
-var stderr = os.Stderr
+var (
+	stderr = os.Stderr
+	mux *ts.Mux
+)
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
-	if !strings.HasPrefix(filename, "udp:") {
-		return files.Create(ctx, filename)
+	if !strings.HasPrefix(filename, "udp:") && !strings.HasPrefix(filename, "mpegts:") {
+		f, err := files.Create(ctx, filename)
+
+		glog.Infof("output: %s", f.Name())
+
+		return f, err
 	}
 
-	uri, err := url.Parse(filename)
+	uri, err := url.Parse(strings.TrimPrefix(filename, "mpegts:"))
 	if err != nil {
 		return nil, err
 	}
 
-	queries := uri.Query()
-	if packet_size := queries.Get("pkt_size"); packet_size != "" {
-		if sz, err := strconv.ParseInt(packet_size, 0, strconv.IntSize); err == nil {
-			Flags.PacketSize = int(sz)
+	// Default packet size: what the flag --packet-size is.
+	pktSize := Flags.PacketSize
+
+	q := uri.Query()
+	if pkt_size := q.Get(socketfiles.FieldPacketSize); pkt_size != "" {
+		// If the output URL has a pkt_size value, override the default.
+		sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
+		if err != nil {
+			return nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
 		}
+
+		pktSize = int(sz)
 	}
 
-	// force PacketSize to be a multiple of 188, required for mpegts
-	Flags.PacketSize = Flags.PacketSize - (Flags.PacketSize % 188)
-	if Flags.PacketSize <= 0 {
-		Flags.PacketSize = 188
-	}
-	queries.Set("pkt_size", fmt.Sprint(Flags.PacketSize))
+	// Our packet size needs to be an integer multiple of the mpegts packet size.
+	pktSize -= (pktSize % ts.PacketSize)
 
-	uri.RawQuery = queries.Encode()
+	// Our packet size needs to be at least the mpegts packet size.
+	if pktSize <= 0 {
+		pktSize = ts.PacketSize
+	}
+
+	q.Set(socketfiles.FieldPacketSize, fmt.Sprint(pktSize))
+
+	uri.RawQuery = q.Encode()
 	filename = uri.String()
 
-	ffmpegArgs := []string{
-		"-i", "-",
-		"-codec", "copy",
-		"-copyts",
-		"-f", "mpegts",
-		"-mpegts_service_type", "digital_radio",
-		"-mpegts_copyts", "1",
-		"-mpegts_flags", "initial_discontinuity",
-		"-mpegts_flags", "system_b",
-		filename,
-	}
-
-	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		glog.Fatal("you must install ffmpeg to output to mpegts over udp: ", err)
-	}
-
-	if glog.V(5) {
-		glog.Infof("%s %q", ffmpeg, ffmpegArgs)
-	}
-
-	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegArgs...)
-	cmd.Stderr = stderr
-
-	out, err := cmd.StdinPipe()
+	f, err := files.Create(ctx, filename, socketfiles.WithIgnoreErrors(true))
 	if err != nil {
 		return nil, err
 	}
+	glog.Infof("output: %s", f.Name())
 
-	if err := cmd.Start(); err != nil {
+	mux = ts.NewMux(f)
+
+	var wg sync.WaitGroup
+
+	wr, err := mux.Writer(ctx, 1, ts.ProgramTypeAudio)
+	if err != nil {
+		f.Close()
 		return nil, err
 	}
+
+	pipe := bufpipe.New(ctx)
+	s := framer.NewScanner(pipe)
+
+	wg.Add(1)
+	go func() {
+		defer func() {
+			if err := wr.Close(); err != nil {
+				glog.Errorf("mux.Writer.Close: %+v", err)
+			}
+
+			wg.Done()
+		}()
+
+		for s.Scan() {
+			b := s.Bytes()
+
+			n, err := wr.Write(b)
+			if err != nil {
+				glog.Errorf("mux.Writer.Write: %+v", err)
+				return
+			}
+
+			if n < len(b) {
+				glog.Errorf("mux.Writer.Write: %+v", io.ErrShortWrite)
+			}
+		}
+
+		if err := s.Err(); err != nil {
+			glog.Errorf("framer.Scanner: %s: %+v", filename, err)
+		}
+	}()
+
+	out := newTriggerWriter(pipe)
+
+	go func() {
+		<-out.Trigger()
+		for err := range mux.Serve(ctx) {
+			glog.Fatalf("mux.Serve: %+v", err)
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		for err := range mux.Close() {
+			glog.Errorf("mux.Close: %+v", err)
+		}
+	}()
 
 	return out, nil
 }
 
 func main() {
-	finish, ctx := util.Init("icycat", 1, 2)
+	finish, ctx := util.Init("icycat", 2, 0)
 	defer finish()
 
 	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
@@ -185,12 +246,12 @@ func main() {
 				glog.Fatal("net.Listen: ", err)
 			}
 
-			msg := fmt.Sprintf("metrics available at: http://%s/metrics/prometheus", l.Addr())
+			msg := fmt.Sprintf("metrics available at: http://%s/metrics", l.Addr())
 			util.Statusln(msg)
 			glog.Info(msg)
 
 			http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-				http.Redirect(w, req, "/metrics/prometheus", http.StatusMovedPermanently)
+				http.Redirect(w, req, "/metrics", http.StatusMovedPermanently)
 			})
 
 			srv := &http.Server{}
@@ -225,7 +286,7 @@ func main() {
 	opts = append(opts, files.WithWatchdogTimeout(Flags.Timeout))
 
 	if Flags.Metrics {
-		opts = append(opts, files.WithBandwidthMetrics(bwSummary))
+		opts = append(opts, files.WithBandwidthMetrics(bwSummary, true))
 	}
 
 	for {
@@ -250,33 +311,75 @@ func main() {
 			glog.Fatal(err)
 		}
 
-		if fi, err := f.Stat(); err == nil {
-			if glog.V(2) && fi.Name() != arg {
-				glog.Infof("catting %s", fi.Name())
-			}
+		if glog.V(2) && f.Name() != arg {
+			glog.Infof("catting %s", f.Name())
 		}
 
 		if h, ok := f.(Headerer); ok {
-			PrintIcyHeaders(h)
+			name := PrintIcyHeaders(h)
+			if name == "" {
+				name = f.Name()
+			}
+
+			ServiceDesc := &dvb.ServiceDescriptor{
+				Type: dvb.ServiceTypeRadio,
+				Provider: "icycat",
+				Name: name,
+			}
+
+			if mux != nil {
+				service := &dvb.Service{
+					ID: 0x0001,
+				}
+				service.Descriptors = append(service.Descriptors, ServiceDesc)
+
+				sdt := &dvb.ServiceDescriptorTable{
+					Syntax: &psi.SectionSyntax{
+						TableIDExtension: 1,
+						Current: true,
+					},
+					OriginalNetworkID: 0xFF01,
+					Services: []*dvb.Service{ service },
+				}
+				mux.SetDVBSDT(sdt)
+
+				switch {
+				case glog.V(5) == true:
+					glog.Infof("dvb.sdt: %v", sdt)
+
+				case glog.V(2) == true:
+					glog.Infof("DVB Service Description: %v", ServiceDesc)
+				}
+			}
 		}
 
 		start := time.Now()
 		wait := time.After(Flags.Timeout)
 
 		n, err := files.Copy(ctx, out, f, opts...)
+
+		// We open in every loop, so after files.Copy, we have to Close it.
+		if err2 := f.Close(); err == nil {
+			err = err2
+		}
+
 		if err != nil {
 			glog.Error(err)
 
 			if n > 0 {
 				glog.Errorf("%d bytes copied in %v", n, time.Since(start))
 			}
+
+		} else if glog.V(2) {
+			glog.Infof("%d bytes copied in %v", n, time.Since(start))
 		}
 
 		// minimum Flags.Timeout wait.
-		<-wait
-
-		if glog.V(2) {
-			glog.Infof("%d bytes copied in %v", n, time.Since(start))
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			glog.Error(ctx.Err())
+			return
 		}
 	}
 }

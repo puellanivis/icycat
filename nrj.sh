@@ -17,10 +17,57 @@ i386|x86)               ARCH=x86 ;;
 *)                      ARCH=$CPU
 esac
 
-which mpv > /dev/null 2>&1
-if [[ $? -ne 0 ]]; then	
-	echo "This script requires mpv to play the stream." >&2
+PLAY=""
+OUTPUT=""
+METRICS=""
+while [[ $# -gt 0 ]]; do
+	key="$1"
+	val="${key#*=}"
+
+	case $key in
+	--play)
+		PLAY="mpv"
+	;;
+	--play=*)
+		PLAY="$val"
+	;;
+	--stream)
+		OUTPUT="udp://127.0.0.1:1234?pkt_size=1316"
+	;;
+	--output=*)
+		OUTPUT="$val"
+	;;
+	--metrics)
+		METRICS="--metrics"
+	;;
+
+	--)
+		shift
+		berak
+	;;
+	--*)
+		echo "unknow flag $1" >&2
+		exit 1
+	;;
+	*)
+		break
+	;;
+	esac
+	shift
+done
+
+if [[ -n $PLAY && -n $OUTPUT ]]; then
+	echo "Cannot specify both --play and an --output/--stream at the same time" >&2
 	exit 1
+fi
+
+if [[ $PLAY != "" ]]; then
+	FOUND="$(which mpv 2> /dev/null)"
+	if [[ $? -ne 0 ]]; then	
+		echo "Executable $PLAY not found." >&2
+		exit 1
+	fi
+	PLAY="$FOUND /dev/stdin"
 fi
 
 ICYCAT="./bin/$OSKIND.$ARCH/icycat"
@@ -33,7 +80,15 @@ if [[ ! -x $ICYCAT ]]; then
 	fi
 fi
 
-exec $ICYCAT \
-	--logtostderr --stderrthreshold=INFO \
-	--metrics \
-	http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3 | mpv /dev/stdin
+if [[ $OUTPUT != "" ]]; then
+	OUTPUT="--output $OUTPUT"
+fi
+
+if [[ -n $PLAY ]]; then
+	$ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT \
+		http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3 | $PLAY
+	exit $?
+fi
+
+exec $ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT --timeout=10s \
+	http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3
