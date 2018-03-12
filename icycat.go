@@ -98,20 +98,26 @@ var (
 	mux    *ts.Mux
 )
 
-func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
+type discontinuityMarker interface {
+	Discontinuity()
+}
+
+func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), error) {
+	discontinuity := func() { }
+
 	if !strings.HasPrefix(filename, "udp:") && !strings.HasPrefix(filename, "mpegts:") {
 		f, err := files.Create(ctx, filename)
 
 		glog.Infof("output: %s", f.Name())
 
-		return f, err
+		return f, discontinuity, err
 	}
 
 	filename = strings.TrimPrefix(filename, "mpegts:")
 
 	uri, err := url.Parse(filename)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var opts []files.Option
@@ -125,7 +131,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 			// If the output URL has a pkt_size value, override the default.
 			sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
 			if err != nil {
-				return nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
+				return nil, nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
 			}
 
 			pktSize = int(sz)
@@ -149,7 +155,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 
 	f, err := files.Create(ctx, filename, opts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	glog.Infof("output: %s", f.Name())
 
@@ -160,7 +166,11 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 	wr, err := mux.Writer(ctx, 1, ts.ProgramTypeAudio)
 	if err != nil {
 		f.Close()
-		return nil, err
+		return nil, nil, err
+	}
+
+	if s, ok := wr.(discontinuityMarker); ok {
+		discontinuity = s.Discontinuity
 	}
 
 	pipe := bufpipe.New(ctx)
@@ -211,7 +221,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		}
 	}()
 
-	return out, nil
+	return out, discontinuity, nil
 }
 
 func main() {
@@ -279,7 +289,7 @@ func main() {
 		}()
 	}
 
-	out, err := openOutput(ctx, Flags.Output)
+	out, discontinuity, err := openOutput(ctx, Flags.Output)
 	if err != nil {
 		glog.Fatal(err)
 	}
@@ -376,6 +386,8 @@ func main() {
 		if err2 := f.Close(); err == nil {
 			err = err2
 		}
+
+		discontinuity()
 
 		if err != nil {
 			glog.Error(err)
