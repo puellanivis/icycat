@@ -16,13 +16,13 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/puellanivis/breton/lib/io/bufpipe"
 	"github.com/puellanivis/breton/lib/files"
 	"github.com/puellanivis/breton/lib/files/httpfiles"
 	_ "github.com/puellanivis/breton/lib/files/plugins"
 	"github.com/puellanivis/breton/lib/files/socketfiles"
 	"github.com/puellanivis/breton/lib/glog"
 	flag "github.com/puellanivis/breton/lib/gnuflag"
+	"github.com/puellanivis/breton/lib/io/bufpipe"
 	"github.com/puellanivis/breton/lib/metrics"
 	_ "github.com/puellanivis/breton/lib/metrics/http"
 	"github.com/puellanivis/breton/lib/mpeg/framer"
@@ -33,13 +33,13 @@ import (
 )
 
 var Flags struct {
-	Output     string `flag:",short=o"            desc:"Specifies which file to write the output to"`
-	UserAgent  string `flag:",default=icycat/2.0" desc:"Which User-Agent string to use"`
-	Quiet      bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
+	Output    string `flag:",short=o"            desc:"Specifies which file to write the output to"`
+	UserAgent string `flag:",default=icycat/2.0" desc:"Which User-Agent string to use"`
+	Quiet     bool   `flag:",short=q"            desc:"If set, supresses output from subprocesses."`
 
 	// --packet-size defaults to 1316, which is 1500 - (1500 mod 188)
 	// Where 1500 is the typical ethernet MTU, and 188 is the mpegts packet size.
-	PacketSize int    `flag:",default=1316"       desc:"If outputing to udp, default to using this packet size."`
+	PacketSize int `flag:",default=1316"       desc:"If outputing to udp, default to using this packet size."`
 
 	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
 
@@ -53,7 +53,8 @@ func init() {
 }
 
 var (
-	bwSummary = metrics.Summary("icycat_bandwidth_bps", "bandwidth of the copy to output process (bits/second)", metrics.CommonObjectives())
+	bwLifetime = metrics.Gauge("bandwidth_lifetime_bps", "bandwidth of the copy to output process (bits/second)")
+	bwRunning  = metrics.Gauge("bandwidth_running_bps", "bandwidth of the copy to output process (bits/second)")
 )
 
 type Headerer interface {
@@ -94,7 +95,7 @@ func PrintIcyHeaders(h Headerer) (name string) {
 
 var (
 	stderr = os.Stderr
-	mux *ts.Mux
+	mux    *ts.Mux
 )
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
@@ -286,7 +287,11 @@ func main() {
 	opts = append(opts, files.WithWatchdogTimeout(Flags.Timeout))
 
 	if Flags.Metrics {
-		opts = append(opts, files.WithBandwidthMetrics(bwSummary, true))
+		opts = append(opts,
+			files.WithMetricsScale(8), // bits instead of bytes
+			files.WithBandwidthMetrics(bwLifetime),
+			files.WithIntervalBandwidthMetrics(bwRunning, 10, 1*time.Second),
+		)
 	}
 
 	for {
@@ -322,9 +327,9 @@ func main() {
 			}
 
 			ServiceDesc := &dvb.ServiceDescriptor{
-				Type: dvb.ServiceTypeRadio,
+				Type:     dvb.ServiceTypeRadio,
 				Provider: "icycat",
-				Name: name,
+				Name:     name,
 			}
 
 			if mux != nil {
@@ -336,10 +341,11 @@ func main() {
 				sdt := &dvb.ServiceDescriptorTable{
 					Syntax: &psi.SectionSyntax{
 						TableIDExtension: 1,
-						Current: true,
+						Current:          true,
 					},
 					OriginalNetworkID: 0xFF01,
-					Services: []*dvb.Service{ service },
+
+					Services: []*dvb.Service{service},
 				}
 				mux.SetDVBSDT(sdt)
 

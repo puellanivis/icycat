@@ -7,7 +7,7 @@ import (
 
 type triggerWriter struct {
 	once sync.Once
-	ch chan struct{}
+	ch   chan struct{}
 
 	w io.WriteCloser
 }
@@ -15,7 +15,7 @@ type triggerWriter struct {
 func newTriggerWriter(w io.WriteCloser) *triggerWriter {
 	return &triggerWriter{
 		ch: make(chan struct{}),
-		w: w,
+		w:  w,
 	}
 }
 
