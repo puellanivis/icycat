@@ -107,39 +107,47 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, error) {
 		return f, err
 	}
 
-	uri, err := url.Parse(strings.TrimPrefix(filename, "mpegts:"))
+	filename = strings.TrimPrefix(filename, "mpegts:")
+
+	uri, err := url.Parse(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	// Default packet size: what the flag --packet-size is.
-	pktSize := Flags.PacketSize
+	var opts []files.Option
 
-	q := uri.Query()
-	if pkt_size := q.Get(socketfiles.FieldPacketSize); pkt_size != "" {
-		// If the output URL has a pkt_size value, override the default.
-		sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
-		if err != nil {
-			return nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
+	if uri.Scheme == "udp" {
+		// Default packet size: what the flag --packet-size is.
+		pktSize := Flags.PacketSize
+
+		q := uri.Query()
+		if pkt_size := q.Get(socketfiles.FieldPacketSize); pkt_size != "" {
+			// If the output URL has a pkt_size value, override the default.
+			sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
+			if err != nil {
+				return nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
+			}
+
+			pktSize = int(sz)
 		}
 
-		pktSize = int(sz)
+		// Our packet size needs to be an integer multiple of the mpegts packet size.
+		pktSize -= (pktSize % ts.PacketSize)
+
+		// Our packet size needs to be at least the mpegts packet size.
+		if pktSize <= 0 {
+			pktSize = ts.PacketSize
+		}
+
+		q.Set(socketfiles.FieldPacketSize, fmt.Sprint(pktSize))
+
+		uri.RawQuery = q.Encode()
+		filename = uri.String()
+
+		opts = append(opts, socketfiles.WithIgnoreErrors(true))
 	}
 
-	// Our packet size needs to be an integer multiple of the mpegts packet size.
-	pktSize -= (pktSize % ts.PacketSize)
-
-	// Our packet size needs to be at least the mpegts packet size.
-	if pktSize <= 0 {
-		pktSize = ts.PacketSize
-	}
-
-	q.Set(socketfiles.FieldPacketSize, fmt.Sprint(pktSize))
-
-	uri.RawQuery = q.Encode()
-	filename = uri.String()
-
-	f, err := files.Create(ctx, filename, socketfiles.WithIgnoreErrors(true))
+	f, err := files.Create(ctx, filename, opts...)
 	if err != nil {
 		return nil, err
 	}
