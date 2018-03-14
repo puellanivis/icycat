@@ -108,7 +108,9 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), e
 	if !strings.HasPrefix(filename, "udp:") && !strings.HasPrefix(filename, "mpegts:") {
 		f, err := files.Create(ctx, filename)
 
-		glog.Infof("output: %s", f.Name())
+		if err == nil {
+			glog.Infof("output: %s", f.Name())
+		}
 
 		return f, discontinuity, err
 	}
