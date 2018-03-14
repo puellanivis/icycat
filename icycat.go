@@ -39,9 +39,9 @@ var Flags struct {
 
 	// --packet-size defaults to 1316, which is 1500 - (1500 mod 188)
 	// Where 1500 is the typical ethernet MTU, and 188 is the mpegts packet size.
-	PacketSize int `flag:",default=1316"       desc:"If outputing to udp, default to using this packet size."`
+	PacketSize int `flag:",default=1316"         desc:"If outputing to udp, default to using this packet size."`
 
-	Timeout time.Duration `flag:",default=5s"    desc:"Timeout for each read, if it expires, entire request will restart."`
+	Timeout time.Duration `flag:",default=5s"    desc:"The timeout between rapid copy errors."`
 
 	Metrics        bool   `desc:"If set, publish metrics to the given metrics-port or metrics-addr."`
 	MetricsPort    int    `desc:"Which port to publish metrics with. (default auto-assign)"`
@@ -103,16 +103,16 @@ type discontinuityMarker interface {
 }
 
 func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), error) {
-	discontinuity := func() { }
+	discontinuity := func() {}
 
 	if !strings.HasPrefix(filename, "udp:") && !strings.HasPrefix(filename, "mpegts:") {
 		f, err := files.Create(ctx, filename)
-
-		if err == nil {
-			glog.Infof("output: %s", f.Name())
+		if err != nil {
+			return nil, nil, err
 		}
 
-		return f, discontinuity, err
+		glog.Infof("output: %s", f.Name())
+		return f, discontinuity, nil
 	}
 
 	filename = strings.TrimPrefix(filename, "mpegts:")
@@ -226,6 +226,129 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), e
 	return out, discontinuity, nil
 }
 
+func DVBService(desc *dvb.ServiceDescriptor) {
+	if mux != nil {
+		service := &dvb.Service{
+			ID: 0x0001,
+		}
+		service.Descriptors = append(service.Descriptors, desc)
+
+		sdt := &dvb.ServiceDescriptorTable{
+			Syntax: &psi.SectionSyntax{
+				TableIDExtension: 1,
+				Current:          true,
+			},
+			OriginalNetworkID: 0xFF01,
+			Services:          []*dvb.Service{service},
+		}
+		mux.SetDVBSDT(sdt)
+
+		switch {
+		case glog.V(5) == true:
+			glog.Infof("dvb.sdt: %v", sdt)
+
+		case glog.V(2) == true:
+			glog.Info("DVB Service Description: %v", desc)
+		}
+	}
+}
+
+func ICECASTReader(ctx context.Context, filename string, discontinuity func()) (io.Reader, error) {
+	reopen := func() (files.Reader, error) {
+		discontinuity()
+
+		// BUG: if you attempt to load a SHOUTcast 1.9.x address,
+		// it will return an HTTP version field of "ICY" not "HTTP/x.y",
+		// and Go’s net/http library will barf and return an error.
+		// There is no way at this time to tell it to treat said HTTP version as "HTTP/1.0"
+		// without possibly hijacking the stream through a text transform that looks to see if it
+		// starts with ICY, and replaces that with HTTP/1.0…
+		//
+		// BETTER: net/http should allow one to say "ICY" maps to HTTP/1.0,
+		// it already has short-circuits for "HTTP/1.0" and "HTTP/1.1" after all.
+		f, err := files.Open(ctx, filename)
+		if err != nil {
+			return nil, err
+		}
+
+		if glog.V(2) && f.Name() != filename {
+			glog.Infof("catting %s", f.Name())
+		}
+
+		return f, err
+	}
+
+	f, err := reopen()
+	if err != nil {
+		return nil, err
+	}
+
+	if h, ok := f.(Headerer); ok {
+		name := PrintIcyHeaders(h)
+		if name == "" {
+			name = f.Name()
+		}
+
+		ServiceDesc := &dvb.ServiceDescriptor{
+			Type:     dvb.ServiceTypeRadio,
+			Provider: "icycat",
+			Name:     name,
+		}
+
+		DVBService(ServiceDesc)
+	}
+
+	opts := []files.CopyOption{
+		files.WithWatchdogTimeout(Flags.Timeout),
+	}
+
+	pipe := bufpipe.New(ctx)
+
+	go func() {
+		defer pipe.Close()
+
+		for {
+			start := time.Now()
+			wait := time.After(Flags.Timeout)
+
+			if glog.V(1) {
+				glog.Infof("copying to buffer: %s", f.Name())
+			}
+
+			n, err := files.Copy(ctx, pipe, f, opts...)
+
+			// We reopen in every loop, so after files.Copy, we have to Close it.
+			if err2 := f.Close(); err == nil {
+				err = err2
+			}
+
+			if err != nil {
+				glog.Error(err)
+
+				if n > 0 {
+					glog.Errorf("%d bytes copied in %v", n, time.Since(start))
+				}
+
+			} else if glog.V(2) {
+				glog.Infof("%d bytes copied in %v", n, time.Since(start))
+			}
+
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				return
+			}
+
+			f, err = reopen()
+			if err != nil {
+				glog.Errorf("%+v", err)
+			}
+		}
+	}()
+
+	return pipe, nil
+}
+
 func main() {
 	finish, ctx := util.Init("icycat", 2, 0)
 	defer finish()
@@ -304,7 +427,6 @@ func main() {
 	arg, args := args[0], args[1:]
 
 	var opts []files.CopyOption
-	opts = append(opts, files.WithWatchdogTimeout(Flags.Timeout))
 
 	if Flags.Metrics {
 		opts = append(opts,
@@ -312,6 +434,11 @@ func main() {
 			files.WithBandwidthMetrics(bwLifetime),
 			files.WithIntervalBandwidthMetrics(bwRunning, 10, 1*time.Second),
 		)
+	}
+
+	in, err := ICECASTReader(ctx, arg, discontinuity)
+	if err != nil {
+		glog.Fatalf("ICECASTReader: %+v", err)
 	}
 
 	for {
@@ -322,76 +449,12 @@ func main() {
 		default:
 		}
 
-		// BUG: if you attempt to load a SHOUTcast 1.9.x address,
-		// it will return an HTTP version field of "ICY" not "HTTP/x.y",
-		// and Go’s net/http library will barf and return an error.
-		// There is no way at this time to tell it to treat said HTTP version as "HTTP/1.0"
-		// without possibly hijacking the stream through a text transform that looks to see if it
-		// starts with ICY, and replaces that with HTTP/1.0…
-		//
-		// BETTER: net/http should allow one to say "ICY" maps to HTTP/1.0,
-		// it already has short-circuits for "HTTP/1.0" and "HTTP/1.1" after all.
-		f, err := files.Open(ctx, arg)
-		if err != nil {
-			glog.Fatal(err)
-		}
-
-		if glog.V(2) && f.Name() != arg {
-			glog.Infof("catting %s", f.Name())
-		}
-
-		if h, ok := f.(Headerer); ok {
-			name := PrintIcyHeaders(h)
-			if name == "" {
-				name = f.Name()
-			}
-
-			ServiceDesc := &dvb.ServiceDescriptor{
-				Type:     dvb.ServiceTypeRadio,
-				Provider: "icycat",
-				Name:     name,
-			}
-
-			if mux != nil {
-				service := &dvb.Service{
-					ID: 0x0001,
-				}
-				service.Descriptors = append(service.Descriptors, ServiceDesc)
-
-				sdt := &dvb.ServiceDescriptorTable{
-					Syntax: &psi.SectionSyntax{
-						TableIDExtension: 1,
-						Current:          true,
-					},
-					OriginalNetworkID: 0xFF01,
-
-					Services: []*dvb.Service{service},
-				}
-				mux.SetDVBSDT(sdt)
-
-				switch {
-				case glog.V(5) == true:
-					glog.Infof("dvb.sdt: %v", sdt)
-
-				case glog.V(2) == true:
-					glog.Infof("DVB Service Description: %v", ServiceDesc)
-				}
-			}
-		}
-
 		start := time.Now()
 		wait := time.After(Flags.Timeout)
 
-		n, err := files.Copy(ctx, out, f, opts...)
+		n, err := files.Copy(ctx, out, in, opts...)
 
-		// We open in every loop, so after files.Copy, we have to Close it.
-		if err2 := f.Close(); err == nil {
-			err = err2
-		}
-
-		discontinuity()
-
-		if err != nil {
+		if err != nil && err != io.EOF {
 			glog.Error(err)
 
 			if n > 0 {
@@ -400,6 +463,10 @@ func main() {
 
 		} else if glog.V(2) {
 			glog.Infof("%d bytes copied in %v", n, time.Since(start))
+		}
+
+		if err == io.EOF {
+			break
 		}
 
 		// minimum Flags.Timeout wait.
