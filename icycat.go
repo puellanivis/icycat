@@ -32,6 +32,7 @@ import (
 	"github.com/puellanivis/breton/lib/util"
 )
 
+// Flags contains all of the flags defined for the application.
 var Flags struct {
 	Output    string `flag:",short=o"            desc:"Specifies which file to write the output to"`
 	UserAgent string `flag:",default=icycat/2.0" desc:"Which User-Agent string to use"`
@@ -57,11 +58,11 @@ var (
 	bwRunning  = metrics.Gauge("bandwidth_running_bps", "bandwidth of the copy to output process (bits/second)")
 )
 
-type Headerer interface {
+type headerer interface {
 	Header() (http.Header, error)
 }
 
-func PrintIcyHeaders(h Headerer) (name string) {
+func printIcyHeaders(h headerer) (name string) {
 	header, err := h.Header()
 	if err != nil {
 		glog.Errorf("couldn’t get headers: %s", err)
@@ -70,7 +71,7 @@ func PrintIcyHeaders(h Headerer) (name string) {
 
 	var headers []string
 
-	for k, _ := range header {
+	for k := range header {
 		key := strings.ToUpper(k)
 
 		if strings.HasPrefix(key, "ICY-") {
@@ -129,11 +130,11 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), e
 		pktSize := Flags.PacketSize
 
 		q := uri.Query()
-		if pkt_size := q.Get(socketfiles.FieldPacketSize); pkt_size != "" {
-			// If the output URL has a pkt_size value, override the default.
-			sz, err := strconv.ParseInt(pkt_size, 0, strconv.IntSize)
+		if urlPktSize := q.Get(socketfiles.FieldPacketSize); urlPktSize != "" {
+			// If the output URL has a urlPktSize value, override the default.
+			sz, err := strconv.ParseInt(urlPktSize, 0, strconv.IntSize)
 			if err != nil {
-				return nil, nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, pkt_size, err)
+				return nil, nil, errors.Errorf("bad %s value: %s: %+v", socketfiles.FieldPacketSize, urlPktSize, err)
 			}
 
 			pktSize = int(sz)
@@ -226,6 +227,7 @@ func openOutput(ctx context.Context, filename string) (io.WriteCloser, func(), e
 	return out, discontinuity, nil
 }
 
+// DVBService sets the dvb.ServiceDescriptor to be used by the muxer.
 func DVBService(desc *dvb.ServiceDescriptor) {
 	if mux != nil {
 		service := &dvb.Service{
@@ -253,6 +255,7 @@ func DVBService(desc *dvb.ServiceDescriptor) {
 	}
 }
 
+// ICECASTReader returns an io.Reader from the given filename that reads an ICECAST stream.
 func ICECASTReader(ctx context.Context, filename string, discontinuity func()) (io.Reader, error) {
 	reopen := func() (files.Reader, error) {
 		discontinuity()
@@ -283,8 +286,8 @@ func ICECASTReader(ctx context.Context, filename string, discontinuity func()) (
 		return nil, err
 	}
 
-	if h, ok := f.(Headerer); ok {
-		name := PrintIcyHeaders(h)
+	if h, ok := f.(headerer); ok {
+		name := printIcyHeaders(h)
 		if name == "" {
 			name = f.Name()
 		}
