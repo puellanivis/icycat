@@ -248,7 +248,7 @@ func DVBService(desc *dvb.ServiceDescriptor) {
 			glog.Infof("dvb.sdt: %v", sdt)
 
 		case glog.V(2) == true:
-			glog.Info("DVB Service Description: %v", desc)
+			glog.Infof("DVB Service Description: %v", desc)
 		}
 	}
 }
@@ -360,7 +360,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 {
-		util.Statusln(flag.Usage)
+		flag.Usage()
 		util.Exit(1)
 	}
 
