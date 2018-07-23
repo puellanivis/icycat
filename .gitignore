@@ -1,5 +1,6 @@
 icycat
 bin
+go.sum
 *.ts
 *.mp3
 *.mpegts

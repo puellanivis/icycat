@@ -350,10 +350,7 @@ func ICECASTReader(ctx context.Context, filename string, discontinuity func()) (
 }
 
 func main() {
-	ctx, finish, err := util.Init("icycat", 2, 0)
-	if err != nil {
-		glog.Fatal(err)
-	}
+	ctx, finish := util.Init("icycat", 2, 0)
 	defer finish()
 
 	ctx = httpfiles.WithUserAgent(ctx, Flags.UserAgent)
