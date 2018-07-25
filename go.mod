@@ -1,6 +1,6 @@
-module github.com/puellanivis/dashcat
+module github.com/puellanivis/icycat
 
 require (
 	github.com/pkg/errors v0.8.0
-	github.com/puellanivis/breton v0.0.0-20180723152720-9fc9bd81038b
+	github.com/puellanivis/breton v0.1.0
 )
