@@ -423,7 +423,7 @@ func main() {
 			defer cancel()
 
 			if err := srv.Shutdown(ctx); err != nil {
-				glog.Error("http.Server.Shutdown:", err)
+				glog.Error("http.Server.Shutdown: ", err)
 			}
 
 			l.Close()
