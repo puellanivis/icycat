@@ -2,19 +2,20 @@
 
 # canonicalize OSTYPE to OSKIND
 case $OSTYPE in
-darwin*)        OSKIND=darwin ;;
-linux*)         OSKIND=linux ;;
-openbsd*)       OSKIND=openbsd ;;
-freebsd*)       OSKIND=freebsd ;;
-*)              OSKIND=$OSTYPE ;;
+darwin*)  OSKIND=darwin ;;
+linux*)   OSKIND=linux ;;
+openbsd*) OSKIND=openbsd ;;
+freebsd*) OSKIND=freebsd ;;
+cygwin*)  OSKIND=windows ;;
+*)        OSKIND=$OSTYPE ;;
 esac
 
 # canonicalize CPU to ARCH
 [ -z "$CPU" ] && CPU=`uname -m`
 case $CPU in
-amd64|x86_64|x86-64)    ARCH=x86_64 ;;
-i386|x86)               ARCH=x86 ;;
-*)                      ARCH=$CPU
+amd64|x86_64|x86-64) ARCH=x86_64 ;;
+i386|x86)            ARCH=x86 ;;
+*)                   ARCH=$CPU ;;
 esac
 
 PLAY=""
@@ -43,7 +44,7 @@ while [[ $# -gt 0 ]]; do
 
 	--)
 		shift
-		berak
+		break
 	;;
 	--*)
 		echo "unknow flag $1" >&2
@@ -61,13 +62,13 @@ if [[ -n $PLAY && -n $OUTPUT ]]; then
 	exit 1
 fi
 
-if [[ $PLAY != "" ]]; then
+if [[ $PLAY != "" && $PLAY = "mpv" ]]; then
 	FOUND="$(which mpv 2> /dev/null)"
 	if [[ $? -ne 0 ]]; then	
 		echo "Executable $PLAY not found." >&2
 		exit 1
 	fi
-	PLAY="$FOUND /dev/stdin"
+	PLAY="$FOUND -"
 fi
 
 ICYCAT="./bin/$OSKIND.$ARCH/icycat"
@@ -84,11 +85,10 @@ if [[ $OUTPUT != "" ]]; then
 	OUTPUT="--output $OUTPUT"
 fi
 
+URL="http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3"
 if [[ -n $PLAY ]]; then
-	$ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT \
-		http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3 | $PLAY
+	$ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT $URL | $PLAY
 	exit $?
 fi
 
-exec $ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT --timeout=10s \
-	http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3
+exec $ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT --timeout=10s $URL
