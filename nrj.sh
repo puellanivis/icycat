@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
 		PLAY="$val"
 	;;
 	--stream)
-		OUTPUT="udp://127.0.0.1:1234?pkt_size=1316"
+		OUTPUT="udp://127.0.0.1:1234?pkt_size=1316&tos=0x80&ttl=5"
 	;;
 	--output=*)
 		OUTPUT="$val"
