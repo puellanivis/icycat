@@ -13,7 +13,7 @@ esac
 # canonicalize CPU to ARCH
 [ -z "$CPU" ] && CPU=`uname -m`
 case $CPU in
-amd64|x86_64|x86-64) ARCH=x86_64 ;;
+arm64|amd64|x86_64|x86-64) ARCH=x86_64 ;;
 i386|x86)            ARCH=x86 ;;
 *)                   ARCH=$CPU ;;
 esac
