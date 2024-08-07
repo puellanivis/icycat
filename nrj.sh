@@ -85,7 +85,7 @@ if [[ $OUTPUT != "" ]]; then
 	OUTPUT="--output $OUTPUT"
 fi
 
-URL="http://cdn.nrjaudio.fm/adwz1/de/33001/mp3_128.mp3"
+URL="https://frontend.streamonkey.net/energy-digital/stream/mp3?aggregator=energyde"
 if [[ -n $PLAY ]]; then
 	$ICYCAT --logtostderr --stderrthreshold=INFO $METRICS $OUTPUT $URL | $PLAY
 	exit $?
